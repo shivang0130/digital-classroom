@@ -1,63 +1,112 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Classroom Room</title>
+  <title>Multi-User WebRTC Room</title>
+  <style>
+    video {
+      width: 200px;
+      height: 150px;
+      margin: 5px;
+      border: 2px solid #4CAF50;
+      border-radius: 8px;
+    }
+  </style>
 </head>
 <body>
-  <h2>WebRTC Classroom</h2>
+  <h2>Multi-User Video Room</h2>
   <video id="localVideo" autoplay muted></video>
-  <video id="remoteVideo" autoplay></video>
+  <div id="remoteVideos"></div>
 
   <script>
-    const roomId = window.location.pathname.split('/').pop();
-   // Change this if hosted
-   const socket = new WebSocket("wss://polar-maroon-barnacle.glitch.me");
+    const socket = new WebSocket("wss://polar-maroon-barnacle.glitch.me"); // Your signaling server
+    const peers = {}; // socketId -> RTCPeerConnection
+    let localStream;
 
-    let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
-
+    // Get user media
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
+        localStream = stream;
         document.getElementById("localVideo").srcObject = stream;
-        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        sendToServer({ type: "join-room" });
       });
 
-    pc.onicecandidate = event => {
-      if (event.candidate) {
-        socket.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate, roomId }));
-      }
-    };
-
-    pc.ontrack = event => {
-      document.getElementById("remoteVideo").srcObject = event.streams[0];
-    };
-
-    socket.onmessage = async message => {
-      const data = JSON.parse(message.data);
-      if (data.roomId !== roomId) return;
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data);
 
       switch (data.type) {
+        case "new-user":
+          if (!peers[data.socketId]) createOffer(data.socketId);
+          break;
         case "offer":
-          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          socket.send(JSON.stringify({ type: "answer", answer, roomId }));
+          createAnswer(data.offer, data.socketId);
           break;
-
         case "answer":
-          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          peers[data.socketId].setRemoteDescription(new RTCSessionDescription(data.answer));
           break;
-
-        case "ice-candidate":
-          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        case "candidate":
+          peers[data.socketId].addIceCandidate(new RTCIceCandidate(data.candidate));
           break;
       }
     };
 
-    socket.onopen = async () => {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.send(JSON.stringify({ type: "offer", offer, roomId }));
-    };
+    function sendToServer(msg) {
+      socket.send(JSON.stringify(msg));
+    }
+
+    function createOffer(socketId) {
+      const peer = new RTCPeerConnection();
+      peers[socketId] = peer;
+
+      localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
+
+      peer.onicecandidate = event => {
+        if (event.candidate) {
+          sendToServer({ type: "candidate", candidate: event.candidate, socketId });
+        }
+      };
+
+      peer.ontrack = event => addRemoteVideo(socketId, event.streams[0]);
+
+      peer.createOffer().then(offer => {
+        return peer.setLocalDescription(offer);
+      }).then(() => {
+        sendToServer({ type: "offer", offer: peer.localDescription, socketId });
+      });
+    }
+
+    function createAnswer(offer, socketId) {
+      const peer = new RTCPeerConnection();
+      peers[socketId] = peer;
+
+      localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
+
+      peer.onicecandidate = event => {
+        if (event.candidate) {
+          sendToServer({ type: "candidate", candidate: event.candidate, socketId });
+        }
+      };
+
+      peer.ontrack = event => addRemoteVideo(socketId, event.streams[0]);
+
+      peer.setRemoteDescription(new RTCSessionDescription(offer)).then(() => {
+        return peer.createAnswer();
+      }).then(answer => {
+        return peer.setLocalDescription(answer);
+      }).then(() => {
+        sendToServer({ type: "answer", answer: peer.localDescription, socketId });
+      });
+    }
+
+    function addRemoteVideo(id, stream) {
+      if (!document.getElementById(id)) {
+        const video = document.createElement("video");
+        video.id = id;
+        video.srcObject = stream;
+        video.autoplay = true;
+        video.playsInline = true;
+        document.getElementById("remoteVideos").appendChild(video);
+      }
+    }
   </script>
 </body>
 </html>
