@@ -1,39 +1,62 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>Join Room</title>
+  <title>Classroom Room</title>
 </head>
 <body>
-  <h2>🎥 You're in Room: <span id="roomName"></span></h2>
+  <h2>WebRTC Classroom</h2>
   <video id="localVideo" autoplay muted></video>
   <video id="remoteVideo" autoplay></video>
 
   <script>
-    const room = new URLSearchParams(window.location.search).get("room");
-    document.getElementById("roomName").innerText = room;
+    const roomId = window.location.pathname.split('/').pop();
+    const socket = new WebSocket("ws://localhost:8080"); // Change this if hosted
 
-    const localVideo = document.getElementById('localVideo');
-    const remoteVideo = document.getElementById('remoteVideo');
-    let peerConnection;
-    const servers = {
-      iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-    };
+    let pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
 
     navigator.mediaDevices.getUserMedia({ video: true, audio: true })
       .then(stream => {
-        localVideo.srcObject = stream;
-        peerConnection = new RTCPeerConnection(servers);
-
-        stream.getTracks().forEach(track => {
-          peerConnection.addTrack(track, stream);
-        });
-
-        peerConnection.ontrack = e => {
-          remoteVideo.srcObject = e.streams[0];
-        };
-
-        console.log("Ready to connect in room:", room);
+        document.getElementById("localVideo").srcObject = stream;
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
       });
+
+    pc.onicecandidate = event => {
+      if (event.candidate) {
+        socket.send(JSON.stringify({ type: "ice-candidate", candidate: event.candidate, roomId }));
+      }
+    };
+
+    pc.ontrack = event => {
+      document.getElementById("remoteVideo").srcObject = event.streams[0];
+    };
+
+    socket.onmessage = async message => {
+      const data = JSON.parse(message.data);
+      if (data.roomId !== roomId) return;
+
+      switch (data.type) {
+        case "offer":
+          await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          socket.send(JSON.stringify({ type: "answer", answer, roomId }));
+          break;
+
+        case "answer":
+          await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+          break;
+
+        case "ice-candidate":
+          await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+          break;
+      }
+    };
+
+    socket.onopen = async () => {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      socket.send(JSON.stringify({ type: "offer", offer, roomId }));
+    };
   </script>
 </body>
 </html>
